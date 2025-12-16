@@ -1,80 +1,145 @@
-import React, { useState } from 'react';
-import { Share2, RefreshCw, MessageCircle, Sparkles, Copy, Facebook, Twitter, X } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { RefreshCw, Sparkles, Volume2, Square, Music, Share2, Loader2 } from 'lucide-react';
 import { GeneratedContent } from '../types';
 import { THEMES } from '../constants';
+import FallbackVisuals from './FallbackVisuals';
 
 interface ResultCardProps {
   content: GeneratedContent;
   onReset: () => void;
+  isImageLoading?: boolean;
 }
 
-const ResultCard: React.FC<ResultCardProps> = ({ content, onReset }) => {
-  const [showShareModal, setShowShareModal] = useState(false);
+// -- Audio Helpers --
+function decode(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
+const ResultCard: React.FC<ResultCardProps> = ({ content, onReset, isImageLoading = false }) => {
+  const [isPlaying, setIsPlaying] = useState(false);
   
-  // Generate a URL that encodes the content in query parameters
-  const generateShareUrl = () => {
-    const params = new URLSearchParams();
-    if (content.theme) params.set('theme', content.theme);
-    if (content.greeting) params.set('greeting', content.greeting);
-    if (content.poem) params.set('poem', content.poem);
-    
-    // Always use origin + pathname to ensure we build off the app root, avoiding 404s
-    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
-  };
-
-  const handleShare = async () => {
-    const shareUrl = generateShareUrl();
-    const shareText = '🎁 I have a magical Christmas surprise for you!';
-    const shareData = {
-      title: 'Merry Christmas 2025',
-      text: shareText,
-      url: shareUrl,
-    };
-
-    if (navigator.share) {
-      try {
-        await navigator.share(shareData);
-      } catch (err) {
-        console.log('Native share failed or cancelled', err);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
+  const hasAutoplayedRef = useRef(false);
+  
+  // Cleanup audio on unmount
+  useEffect(() => {
+    return () => {
+      stopAudio();
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
       }
-    } else {
-      setShowShareModal(true);
+    };
+  }, []);
+
+  // Autoplay Effect
+  useEffect(() => {
+    // Only attempt autoplay if we have audio and haven't played yet
+    if (content.audioBase64 && !hasAutoplayedRef.current) {
+      // Small delay to allow visual transition to complete or for user interaction to register
+      const timer = setTimeout(() => {
+        handlePlayAudio(true); // true = isAutoplay
+      }, 1000);
+      hasAutoplayedRef.current = true;
+      return () => clearTimeout(timer);
     }
+  }, [content.audioBase64]);
+
+  const stopAudio = () => {
+    if (sourceNodeRef.current) {
+      sourceNodeRef.current.stop();
+      sourceNodeRef.current = null;
+    }
+    setIsPlaying(false);
   };
 
-  const handleCopyLink = async () => {
-    const shareUrl = generateShareUrl();
-    const shareText = '🎁 I have a magical Christmas surprise for you!';
+  const handlePlayAudio = async (isAutoplay = false) => {
+    if (isPlaying && !isAutoplay) {
+      stopAudio();
+      return;
+    }
+
+    if (!content.audioBase64) return;
+
     try {
-      await navigator.clipboard.writeText(`${shareText} ${shareUrl}`);
-      alert('Greeting link copied to clipboard!');
-    } catch (clipboardErr) {
-      prompt('Copy this link to share:', shareUrl);
+      setIsPlaying(true);
+      
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      }
+
+      const ctx = audioContextRef.current;
+      
+      // Attempt to resume context if suspended (browser autoplay policy)
+      if (ctx.state === 'suspended') {
+        try {
+            await ctx.resume();
+        } catch (e) {
+            console.warn("Autoplay blocked by browser policy. User interaction required.");
+            setIsPlaying(false);
+            return; // Exit if we can't play automatically
+        }
+      }
+
+      const audioBytes = decode(content.audioBase64);
+      const audioBuffer = await decodeAudioData(audioBytes, ctx, 24000, 1);
+      
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      
+      source.onended = () => {
+        setIsPlaying(false);
+        sourceNodeRef.current = null;
+      };
+
+      source.start();
+      sourceNodeRef.current = source;
+    } catch (e) {
+      console.error("Audio playback failed", e);
+      setIsPlaying(false);
+      // Only alert if user manually clicked. Silent fail for autoplay.
+      if (!isAutoplay) {
+         alert("Magic voice could not be played on this device.");
+      }
     }
-    setShowShareModal(false);
   };
 
-  const handleTwitter = () => {
-    const shareUrl = generateShareUrl();
-    const text = encodeURIComponent('🎁 I have a magical Christmas surprise for you! Open Pandora\'s Box:');
-    window.open(`https://twitter.com/intent/tweet?text=${text}&url=${encodeURIComponent(shareUrl)}`, '_blank');
-    setShowShareModal(false);
-  };
-
-  const handleFacebook = () => {
-    const shareUrl = generateShareUrl();
-    window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}`, '_blank');
-    setShowShareModal(false);
-  };
-
-  const handleWhatsApp = () => {
-    const shareUrl = generateShareUrl();
-    // By placing the URL at the end and keeping the text engaging, WhatsApp is more likely to render the rich preview card defined in index.html
-    const text = encodeURIComponent(`🎁 I have a magical Christmas surprise for you! Tap to open Pandora's Box:\n\n${shareUrl}`);
+  const handleShare = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('theme', content.theme);
+    url.searchParams.set('greeting', content.greeting);
+    url.searchParams.set('poem', content.poem);
+    
+    const text = encodeURIComponent(`Merry Christmas 2025! Check out this magical greeting I made: ${url.toString()}`);
     window.open(`https://wa.me/?text=${text}`, '_blank');
   };
 
-  // Find theme details for fallback styling
   const currentTheme = THEMES.find(t => t.name === content.theme);
   const themeGradient = currentTheme?.color || 'from-gray-900 to-black';
 
@@ -102,45 +167,6 @@ const ResultCard: React.FC<ResultCardProps> = ({ content, onReset }) => {
 
        <div className="relative max-w-2xl w-full bg-white/5 backdrop-blur-xl rounded-3xl overflow-hidden border border-white/10 shadow-2xl flex flex-col md:flex-row animate-card-entrance shadow-white/5 transform-style-3d">
          
-         {/* Custom Share Modal Overlay */}
-         {showShareModal && (
-           <div className="absolute inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
-             <div className="w-full max-w-sm bg-gray-800 border border-white/10 rounded-2xl p-6 shadow-2xl relative animate-modal-pop">
-               <button 
-                 onClick={() => setShowShareModal(false)}
-                 className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors"
-               >
-                 <X size={20} />
-               </button>
-               
-               <h3 className="text-xl font-christmas text-yellow-400 mb-6 text-center">Share the Magic</h3>
-               
-               <div className="space-y-3">
-                 <button onClick={handleCopyLink} className="w-full flex items-center p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-white group">
-                   <div className="p-2 bg-gray-700 rounded-lg mr-3 group-hover:bg-gray-600">
-                     <Copy size={20} className="text-gray-300" />
-                   </div>
-                   <span className="font-medium">Copy Link</span>
-                 </button>
-
-                 <button onClick={handleTwitter} className="w-full flex items-center p-3 rounded-xl bg-[#1DA1F2]/10 hover:bg-[#1DA1F2]/20 border border-[#1DA1F2]/20 transition-colors text-white group">
-                   <div className="p-2 bg-[#1DA1F2]/20 rounded-lg mr-3 group-hover:bg-[#1DA1F2]/30">
-                     <Twitter size={20} className="text-[#1DA1F2]" />
-                   </div>
-                   <span className="font-medium">Twitter / X</span>
-                 </button>
-
-                 <button onClick={handleFacebook} className="w-full flex items-center p-3 rounded-xl bg-[#1877F2]/10 hover:bg-[#1877F2]/20 border border-[#1877F2]/20 transition-colors text-white group">
-                   <div className="p-2 bg-[#1877F2]/20 rounded-lg mr-3 group-hover:bg-[#1877F2]/30">
-                     <Facebook size={20} className="text-[#1877F2]" />
-                   </div>
-                   <span className="font-medium">Facebook</span>
-                 </button>
-               </div>
-             </div>
-           </div>
-         )}
-
          {/* Image Section */}
          <div className={`w-full md:w-1/2 relative min-h-[300px] md:min-h-[500px] bg-gradient-to-br ${themeGradient} overflow-hidden group`}>
            {/* Shimmer / Reveal Effect */}
@@ -153,13 +179,19 @@ const ResultCard: React.FC<ResultCardProps> = ({ content, onReset }) => {
                className="absolute inset-0 w-full h-full object-cover animate-ken-burns"
              />
            ) : (
-             <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center animate-pulse">
-               <Sparkles className="w-16 h-16 text-yellow-400 mb-4 animate-spin-slow" />
-               <h3 className="font-christmas text-2xl text-white mb-2">Magical Greeting</h3>
-               <p className="text-white/60 text-sm">
-                 (The visual magic was unique to the sender's moment. Generate your own to see the spectacle!)
-               </p>
-             </div>
+             <>
+               {isImageLoading ? (
+                 <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-30">
+                    <Loader2 className="w-12 h-12 text-white/80 animate-spin mb-4" />
+                    <p className="text-white/80 text-sm font-medium animate-pulse">Painting your magical scene...</p>
+                    <p className="text-white/40 text-xs mt-2">Gemini is generating pixels</p>
+                 </div>
+               ) : (
+                 <div className="relative w-full h-full">
+                    <FallbackVisuals />
+                 </div>
+               )}
+             </>
            )}
            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent md:hidden" />
            
@@ -173,10 +205,35 @@ const ResultCard: React.FC<ResultCardProps> = ({ content, onReset }) => {
            {/* Background glow effect behind text */}
            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full bg-gradient-to-r from-yellow-500/5 to-purple-500/5 blur-3xl -z-10 animate-pulse-slow"></div>
 
-           <div className="mb-2 animate-slide-in-right opacity-0" style={{ animationDelay: '0.4s' }}>
+           <div className="mb-2 animate-slide-in-right opacity-0 flex justify-between items-start" style={{ animationDelay: '0.4s' }}>
              <span className="inline-block px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-white/10 text-white/70 border border-white/5 shadow-lg backdrop-blur-sm">
                Theme: {content.theme}
              </span>
+             
+             {/* Audio Player Button - Only shows if audio exists */}
+             {content.audioBase64 && (
+                <button 
+                  onClick={() => handlePlayAudio(false)}
+                  className={`flex items-center space-x-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all ${isPlaying ? 'bg-yellow-400 text-black border-yellow-400 shadow-[0_0_15px_rgba(250,204,21,0.5)]' : 'bg-white/10 text-yellow-300 border-yellow-500/50 hover:bg-white/20'}`}
+                >
+                  {isPlaying ? (
+                    <>
+                      <Square size={12} className="fill-current" />
+                      <span>Stop Singing</span>
+                      <div className="flex space-x-0.5 h-3 items-end ml-1">
+                         <div className="w-0.5 bg-black h-1.5 animate-bounce" style={{ animationDelay: '0s' }}></div>
+                         <div className="w-0.5 bg-black h-3 animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                         <div className="w-0.5 bg-black h-2 animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <Music size={12} />
+                      <span>Play Song</span>
+                    </>
+                  )}
+                </button>
+             )}
            </div>
 
            <h2 className="font-christmas text-4xl md:text-5xl text-yellow-400 mb-6 leading-tight drop-shadow-lg animate-slide-in-right opacity-0" style={{ animationDelay: '0.6s' }}>
@@ -195,32 +252,23 @@ const ResultCard: React.FC<ResultCardProps> = ({ content, onReset }) => {
               ))}
            </div>
 
-           <div className="mt-auto flex flex-col gap-3 animate-fade-in-up opacity-0" style={{ animationDelay: '1.8s' }}>
-             <button 
-               onClick={handleWhatsApp}
-               className="group flex items-center justify-center space-x-2 w-full py-3 bg-[#25D366] hover:bg-[#128C7E] text-white rounded-xl font-semibold transition-all shadow-lg shadow-green-900/50 hover:shadow-green-900/80 hover:-translate-y-1"
-             >
-               <MessageCircle size={20} className="group-hover:animate-bounce" />
-               <span>Send via WhatsApp</span>
-             </button>
-
-             <div className="flex gap-3">
-                <button 
-                  onClick={handleShare}
-                  className="flex-1 flex items-center justify-center space-x-2 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-semibold transition-all border border-white/20 hover:border-white/40 hover:-translate-y-1"
-                >
-                  <Share2 size={18} />
-                  <span>Share</span>
-                </button>
-                
-                <button 
+           <div className="mt-auto animate-fade-in-up opacity-0 space-y-3" style={{ animationDelay: '1.8s' }}>
+              <div className="grid grid-cols-5 gap-2">
+                 <button 
                   onClick={onReset}
-                  className="flex-1 flex items-center justify-center space-x-2 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-semibold transition-all border border-white/20 hover:border-white/40 hover:-translate-y-1"
+                  className="col-span-4 w-full flex items-center justify-center space-x-2 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-semibold transition-all border border-white/20 hover:border-white/40 hover:-translate-y-1"
                 >
                   <RefreshCw size={18} />
-                  <span>{content.imageUrl ? 'Restart' : 'Create Mine'}</span>
+                  <span>{content.imageUrl || isImageLoading ? 'Create Another Magic Box' : 'Create Mine'}</span>
                 </button>
-             </div>
+                <button 
+                   onClick={handleShare}
+                   className="col-span-1 flex items-center justify-center bg-[#25D366] hover:bg-[#128C7E] text-white rounded-xl transition-all hover:-translate-y-1 shadow-lg"
+                   title="Share on WhatsApp"
+                >
+                  <Share2 size={20} />
+                </button>
+              </div>
            </div>
          </div>
        </div>
@@ -284,14 +332,6 @@ const ResultCard: React.FC<ResultCardProps> = ({ content, onReset }) => {
             animation: spin-slow 8s linear infinite;
           }
 
-          @keyframes modal-pop {
-            0% { opacity: 0; transform: scale(0.9); }
-            100% { opacity: 1; transform: scale(1); }
-          }
-          .animate-modal-pop {
-            animation: modal-pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
-          }
-          
           @keyframes pulse-slow {
             0%, 100% { opacity: 0.3; }
             50% { opacity: 0.6; }

@@ -5,6 +5,7 @@ const LOADING_MESSAGES = [
   "Consulting the North Pole Archives...",
   "Mixing starlight and snowflakes...",
   "Teaching reindeer to fly...",
+  "Recording elf choirs...",
   "Wrapping your personalized surprise...",
   "Calibrating Christmas magic...",
   "Checking the Naughty or Nice list..."

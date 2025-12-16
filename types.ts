@@ -11,6 +11,7 @@ export interface GeneratedContent {
   poem: string;
   theme: string;
   imageUrl?: string;
+  audioBase64?: string;
 }
 
 export interface UserData {

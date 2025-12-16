@@ -1,7 +1,5 @@
 {
   "name": "Christmas Pandora's Box 2025",
   "description": "A magical, personalized Christmas greeting generator that creates a unique experience every time it's opened.",
-  "requestFramePermissions": [
-    "camera"
-  ]
+  "requestFramePermissions": []
 }

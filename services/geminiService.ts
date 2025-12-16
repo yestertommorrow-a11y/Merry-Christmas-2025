@@ -1,36 +1,27 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { Theme, GeneratedContent, UserData } from '../types';
+import { GoogleGenAI, Type, Modality } from "@google/genai";
+import { Theme, UserData } from '../types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-export const generateChristmasContent = async (
-  userData: UserData,
-  theme: Theme
-): Promise<GeneratedContent> => {
-  
-  // Parallel execution for text and image to speed up the "magic"
-  const textPromise = generateText(userData, theme);
-  const imagePromise = generateImage(userData, theme);
-
-  const [textContent, imageUrl] = await Promise.all([textPromise, imagePromise]);
-
-  return {
-    ...textContent,
-    theme: theme.name,
-    imageUrl,
-  };
+// Lazy initialization to ensure API key is available
+const getAiClient = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) return null;
+  return new GoogleGenAI({ apiKey });
 };
 
-const generateText = async (userData: UserData, theme: Theme): Promise<{ greeting: string; poem: string }> => {
+// 1. Generate Text (Fastest - Blocking for UI)
+export const generateText = async (userData: UserData, theme: Theme): Promise<{ greeting: string; poem: string }> => {
   try {
+    const ai = getAiClient();
+    if (!ai) throw new Error("No API Key");
+
     const prompt = `
       Create a personalized Christmas greeting card text for ${userData.name || 'a friend'}.
       Theme: ${theme.name}.
       
       Requirements:
       1. A short, warm 1-sentence greeting title.
-      2. A creative 4-line rhyming poem matching the ${theme.name} theme.
-      3. Mention "2025" in the poem or greeting.
+      2. A creative 4-line lyrics/poem matching the ${theme.name} theme. It must be gentle, flowing, and heartwarming, suitable for a soothing song.
+      3. Mention "2025" in the lyrics or greeting.
       
       Output JSON format only.
     `;
@@ -59,33 +50,56 @@ const generateText = async (userData: UserData, theme: Theme): Promise<{ greetin
 
   } catch (error) {
     console.error("Text generation failed", error);
+    // Return fallback text if API fails
     return {
-      greeting: `Happy Holidays 2025!`,
+      greeting: `Merry Christmas 2025!`,
       poem: `The stars shine bright above the night,\nTo bring you joy and pure delight.\nA magic box just for you,\nMay all your Christmas wishes come true.`
     };
   }
 };
 
-const generateImage = async (userData: UserData, theme: Theme): Promise<string | undefined> => {
+// 2. Generate Speech (Depends on Text - Background)
+export const generateSpeech = async (text: string): Promise<string | undefined> => {
   try {
+    const ai = getAiClient();
+    if (!ai) return undefined;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-preview-tts",
+      contents: { parts: [{ text: `Sing the following Christmas lyrics in a sweet, gentle, and soothing voice. Use a melody similar to a soft Christmas lullaby. Perform it warmly and softly: "${text}"` }] },
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: 'Puck' }, 
+          },
+        },
+      },
+    });
+
+    return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+  } catch (error) {
+    console.error("Speech generation failed", error);
+    return undefined;
+  }
+};
+
+// 3. Generate Image (Independent - Background)
+export const generateImage = async (userData: UserData, theme: Theme): Promise<string | undefined> => {
+  try {
+    const ai = getAiClient();
+    if (!ai) return undefined;
+
     let prompt = `A high quality, detailed, festive Christmas scene. Theme: ${theme.prompt}. The year 2025 is subtly visible somewhere.`;
     let model = 'gemini-2.5-flash-image';
     let parts: any[] = [];
 
-    // If user provided a photo, we use it to "personalize" the character
+    // If user provided a photo
     if (userData.photoBase64) {
-      prompt += ` Include a character in the center that loosely resembles the person in the provided image, styled to fit the ${theme.name} theme (e.g. wearing theme-appropriate festive attire). Make it look magical and artistic.`;
-      
-      // Remove data:image/jpeg;base64, prefix if present
+      prompt += ` Include a character in the center that loosely resembles the person in the provided image, styled to fit the ${theme.name} theme.`;
       const base64Data = userData.photoBase64.split(',')[1];
-      
       parts = [
-        {
-            inlineData: {
-                data: base64Data,
-                mimeType: 'image/jpeg' 
-            }
-        },
+        { inlineData: { data: base64Data, mimeType: 'image/jpeg' } },
         { text: prompt }
       ];
     } else {
@@ -95,23 +109,17 @@ const generateImage = async (userData: UserData, theme: Theme): Promise<string |
     const response = await ai.models.generateContent({
       model: model,
       contents: { parts },
-      config: {
-         // Using default config for flash-image
-      }
     });
 
-    // Extract image
     for (const part of response.candidates?.[0]?.content?.parts || []) {
        if (part.inlineData) {
          return `data:image/png;base64,${part.inlineData.data}`;
        }
     }
-    
     return undefined;
 
   } catch (error) {
     console.error("Image generation failed", error);
-    // Return undefined to let the UI show a placeholder or handle it
     return undefined;
   }
 };
